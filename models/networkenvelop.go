@@ -1,8 +1,10 @@
 package models
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 )
 
 var (
@@ -12,28 +14,35 @@ var (
 
 //NetworkEnvelop is a class that handles the network messages
 type NetworkEnvelop struct {
-	Magic           [4]byte
-	Command         [12]byte
-	PayloadLength   uint32
-	PayloadChecksum [4]byte
-	Payload         []byte
-	Testnet         bool
+	Magic   [4]byte
+	Command [12]byte
+	Payload []byte
 }
 
-// ParseNetworkMessage will parse the network message and return the network envelop
+//CreateNetworkEnvelop will create a NetworkEnvelop
+func CreateNetworkEnvelop(command []byte, payload string, testnet bool) *NetworkEnvelop {
+	var magic [4]byte
+	if testnet {
+		magic = testnetMagic
+	} else {
+		magic = mainnetMagic
+	}
+	var commandBuf [12]byte
+	copy(commandBuf[:][:12], command)
+	payloadBuf, _ := hex.DecodeString(payload)
+
+	return &NetworkEnvelop{
+		Magic:   magic,
+		Command: commandBuf,
+		Payload: payloadBuf,
+	}
+}
+
+// ParseNetworkMessage will parse the serialized NetworkMessage and return the network envelop
 func ParseNetworkMessage(networkMessage string, testnet bool) *NetworkEnvelop {
 	rawBytes, _ := hex.DecodeString(networkMessage)
 	magic := rawBytes[0:4]
-	command := rawBytes[4:16]
-	payloadLength := rawBytes[16:20]
-	payloadChecksum := rawBytes[20:24]
-	payload := rawBytes[24:]
-
-	// Create the required buffers
 	var magicBuf [4]byte
-	var commandBuf [12]byte
-	var payloadChecksumBuf [4]byte
-
 	// Copy into required buffers and return
 	copy(magicBuf[:4], magic)
 
@@ -47,28 +56,50 @@ func ParseNetworkMessage(networkMessage string, testnet bool) *NetworkEnvelop {
 			return nil
 		}
 	}
+	//Get the command of the network message
+	command := rawBytes[4:16]
+	var commandBuf [12]byte
 	copy(commandBuf[:12], command)
-	copy(payloadChecksumBuf[:4], payloadChecksum)
-	payloadLengthNum := binary.LittleEndian.Uint32(payloadLength)
-	return &NetworkEnvelop{
-		Magic:           magicBuf,
-		Command:         commandBuf,
-		PayloadLength:   payloadLengthNum,
-		PayloadChecksum: payloadChecksumBuf,
-		Payload:         payload,
+
+	// Get the payload of the ntwork message
+	payloadLength := binary.LittleEndian.Uint32(rawBytes[16:20])
+	payload := rawBytes[24 : 24+payloadLength]
+	// Get the checksum
+	payloadChecksum := hex.EncodeToString(rawBytes[20:24])
+	// Calculate the actual checksum
+	first := sha256.Sum256(payload)
+	second := sha256.Sum256(first[:])
+	calculatedChecksum := hex.EncodeToString(second[:][0:4])
+	if payloadChecksum != calculatedChecksum {
+		fmt.Println("checksum does not match")
+		return nil
 	}
+	return &NetworkEnvelop{
+		Magic:   magicBuf,
+		Command: commandBuf,
+		Payload: payload,
+	}
+
 }
 
 // Serialize the networkenvelop and gives the string
 func (networkEnvelop *NetworkEnvelop) Serialize() string {
 	// Need to convert the Payload length back to littleendian byte array
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf, networkEnvelop.PayloadLength)
-	var resBuf []byte
-	resBuf = append(resBuf, networkEnvelop.Magic[:]...)
-	resBuf = append(resBuf, networkEnvelop.Command[:]...)
-	resBuf = append(resBuf, buf...)
-	resBuf = append(resBuf, networkEnvelop.PayloadChecksum[:]...)
-	resBuf = append(resBuf, networkEnvelop.Payload...)
-	return hex.EncodeToString(resBuf)
+	magicBuf := make([]byte, 4)
+	copy(magicBuf, networkEnvelop.Magic[:])
+
+	var buf []byte
+	buf = append(buf, magicBuf...)
+	buf = append(buf, networkEnvelop.Command[:]...)
+	// Get the byte array of the payload length
+	payloadLength := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payloadLength, uint32(len(networkEnvelop.Payload)))
+	buf = append(buf, payloadLength...)
+
+	first := sha256.Sum256(networkEnvelop.Payload)
+	second := sha256.Sum256(first[:])
+	calculatedChecksum := second[:][0:4]
+	buf = append(buf, calculatedChecksum...)
+	buf = append(buf, networkEnvelop.Payload...)
+	return hex.EncodeToString(buf)
 }
